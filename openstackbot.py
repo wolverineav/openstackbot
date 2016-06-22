@@ -4,6 +4,7 @@ import time
 import twitter
 
 from slackclient import SlackClient
+from difflib import SequenceMatcher as sm
 
 # openstackbot's ID as an environment variable
 BOT_ID = os.environ.get("BOT_ID")
@@ -37,39 +38,66 @@ slack_client = SlackClient(os.environ.get('SLACK_BOT_TOKEN'))
 twitter_api = oauth_login()
 
 
+completeNonsense = "Not sure what you mean. Use the *" + EXAMPLE_COMMAND + \
+                   "* command with numbers, delimited by spaces."
+
+versionNonsense = ("hmm..not sure what you mean. could you rephrase"
+               " with *latest version* and the package name?")
+
+verFmt = "latest build for {} is here: https://%s/job/openstack_{}" % JENKINS_DOMAIN
+
+MIN_GUESS_CONFIDENCE = 0.5
+
+TWITTER_QUOTE = "TWITTER_QUOTE"
+
+responses = {
+  'latest version' : {
+     'horizon-bsn' : {
+       'kilo':     verFmt.format("'horizon-bsn' *openstack kilo*",    'horizon_bsn/50/'),
+       'liberty':  verFmt.format("'horizon-bsn' *openstack liberty*", 'horizon_bsn/49/'),
+       'default':  verFmt.format("'horizon-bsn'",                     'horizon_bsn/lastSuccessfulBuild/') 
+     },
+     'bsnstacklib' : {
+        'kilo':     verFmt.format("'bsnstacklib' *openstack kilo*",   'bsnstacklib/62/'),
+        'liberty':  verFmt.format("'bsnstacklib' *openstack liberty*",'bsnstacklib/60/'),
+        'default':  verFmt.format("'bsnstacklib'",                    'bsnstacklib/lastSuccessfulBuild/') 
+     },
+     'default' : versionNonsense
+  },
+  "entertain" : TWITTER_QUOTE,
+  "quote"     : TWITTER_QUOTE,
+  'default'   : completeNonsense
+}
+
+def mostAlikeRatio(key, command):
+    cmd = command if len(key) <= len(command) else command.ljust(len(key))
+    bestRatio = 0.0
+    for i in xrange(len(cmd)-(len(key)-1)):
+        ratio = sm(None, cmd[i:i+len(key)], key).ratio()
+        bestRatio = max(bestRatio, ratio)
+        if bestRatio == 1:
+            return 1
+    return bestRatio
+
+def findMatchRecursive(tree, command):
+    if isinstance(tree, basestring):
+        return tree
+    confidence={mostAlikeRatio(key,command): key for key in tree if key != 'default'}
+    highestConfidence = max(confidence)
+    if highestConfidence >= MIN_GUESS_CONFIDENCE:
+        return findMatchRecursive(tree[confidence[highestConfidence]], command)
+    else:
+        return tree['default'] if 'default' in tree else None
+
 def handle_command(command, channel):
     """
         Receives commands directed at the bot and determines if they
         are valid commands. If so, then acts on the commands. If not,
         returns back what it needs for clarification.
     """
-    response = "Not sure what you mean. Use the *" + EXAMPLE_COMMAND + \
-               "* command with numbers, delimited by spaces."
-    if "latest version" in command:
-        if "horizon-bsn" in command:
-            if "kilo" in command:
-                response = ("latest build for `horizon-bsn` *openstack kilo* is here: "
-                            "https://" + JENKINS_DOMAIN + "/job/openstack_horizon_bsn/50/")
-            elif "liberty" in command:
-                response = ("latest build for `horizon-bsn` *openstack liberty* is here: "
-                            "https://" + JENKINS_DOMAIN + "/job/openstack_horizon_bsn/49/")
-            else:
-                response = ("latest build for `horizon-bsn` is here: "
-                            "https://" + JENKINS_DOMAIN + "/job/openstack_horizon_bsn/lastSuccessfulBuild/")
-        elif "bsnstacklib" in command:
-            if "kilo" in command:
-                response = ("latest build for `bsnstacklib` *openstack kilo* is here: "
-                            "https://" + JENKINS_DOMAIN + "/job/openstack_bsnstacklib/62/")
-            elif "liberty" in command:
-                response = ("latest build for `bsnstacklib` *openstack liberty* is here: "
-                            "https://" + JENKINS_DOMAIN + "/job/openstack_bsnstacklib/60/")
-            else:
-                response = ("latest build for `bsnstacklib` is here: "
-                            "https://" + JENKINS_DOMAIN + "/job/openstack_bsnstacklib/lastSuccessfulBuild/")
-        else:
-            response = ("hmm..not sure what you mean. could you rephrase "
-                        "with *latest version* and the package name?")
-    elif any(keyword in command for keyword in ("entertain", "quote")):
+    response = findMatchRecursive(responses, command)
+ 
+    if response == TWITTER_QUOTE:
         twitter_handle = random.choice(TWITTER_HANDLES)
         statuses = twitter_api.statuses.user_timeline(screen_name=twitter_handle)
         status = random.choice(statuses)
